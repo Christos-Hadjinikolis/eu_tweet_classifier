@@ -1,19 +1,16 @@
-# General IMPORTS --------------------------------------------------------------------------------------------------#
+import collections
+import itertools
 import os
+import pickle
+import random
 import re
 import sys
-import pickle
-import pandas
-import random
-import itertools
-import collections
+
 import matplotlib.pyplot as plt
-
-
-# NLTK IMPORTS -----------------------------------------------------------------------------------------------------#
-from nltk.tokenize import RegexpTokenizer
+import pandas
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
+from nltk.tokenize import RegexpTokenizer
 
 # PYSPARK PATH SETUP AND IMPORTS -----------------------------------------------------------------------------------#
 os.environ['SPARK_HOME'] = "/Users/path/to/spark-1.6.1-bin-hadoop2.6"  # Path to source folder
@@ -39,12 +36,12 @@ except ImportError as e:
     sys.exit(1)
 
 
-# GLOBAL VARIABLES -------------------------------------------------------------------------------------------------#
+# GLOBAL VARIABLES #
 sc = SparkContext('local[4]', 'EU_Tweet_Sentiment_Analyser')        # Instantiate a SparkContext object
 sqlContext = SQLContext(sc)                                         # Instantiate a sqlContext object
 
 
-# SUB-FUNCTIONS-----------------------------------------------------------------------------------------------------#
+# SUB-FUNCTIONS
 def filter_tweet(tweet):
 
     tweet = re.sub("(htt.* ?)", " ", tweet)    # captures all occurences of "http" followed or not followed by a space
@@ -219,10 +216,10 @@ def final_form_4_training(SVs, labels):
     return to_train
 
 
-# MAIN -------------------------------------------------------------------------------------------------------------#
+# MAIN
 if __name__ == "__main__":
 
-    # LOAD TWEETS --------------------------------------------------------------------------------------------------#
+    # LOAD TWEETS #
 
     # Load Corpus using Pandas
     dataFrame = pandas.read_csv('/Users/path/to/corpus.csv',
@@ -235,17 +232,17 @@ if __name__ == "__main__":
     labels = dataFrame['label']
     del labels[0]
 
-    # CREATE TRAINING CORPUS / CROSS-VALIDATION SET / TEST SET  ----------------------------------------------------#
+    # CREATE TRAINING CORPUS / CROSS-VALIDATION SET / TEST SET  #
 
     # Instantiate Tweet RDDS
     labels_RDD = sc.parallelize(labels, 4)
 
     total_tweets = labels_RDD.count()
-    print "Total tweets: %d" % total_tweets
+    print("Total tweets: %d" % total_tweets)
     pos_tweets = labels_RDD.filter(lambda x: x == "Stay").count()
-    print "Pos tweets: %d" % pos_tweets
+    print("Pos tweets: %d" % pos_tweets)
     neg_tweets = pos_tweets = labels_RDD.filter(lambda x: x == "Leave").count()
-    print "Neg tweets: %d" % pos_tweets
+    print("Neg tweets: %d" % pos_tweets)
 
     # Break tweets between positive and negative
     pos_tweets = []
@@ -308,19 +305,19 @@ if __name__ == "__main__":
     # SHOW CORPUS -------------------------------------------------------------------------------------------------#
     corpus_RDD = wordsByTweet.collect()
 
-    print '\n'.join(map(lambda x: '{0}'.format(x), corpus_RDD))
+    print('\n'.join(map(lambda x: '{0}'.format(x), corpus_RDD)))
 
     # CREATE A DICTIONARY ------------------------------------------------------------------------------------------#
     print("---------------------------------------------------------------------------------------------------------")
-    raw_input("Produce TF-IDF scores...")
+    input("Produce TF-IDF scores...")
 
     dictionary_RDD_IDFs = idfs(wordsByTweet)
     unique_token_count = dictionary_RDD_IDFs.count()
-    print 'There are %s unique tokens in the dataset.' % unique_token_count
+    print('There are %s unique tokens in the dataset.' % unique_token_count)
 
     IDFS_Tokens_Sample = dictionary_RDD_IDFs.takeOrdered(25, lambda s: s[1])
     print("This is a dictionary sample of 25 words:")
-    print '\n'.join(map(lambda (token, idf_score): '{0}: {1}'.format(token, idf_score), IDFS_Tokens_Sample))
+    print('\n'.join(map(lambda (token, idf_score): '{0}: {1}'.format(token, idf_score), IDFS_Tokens_Sample)))
 
     # Create a broadcast variable for the weighted dictionary (sorted)
     dictionary_RDD_IDFs_Weights = dictionary_RDD_IDFs.sortBy(lambda (token, score): score).collectAsMap()
@@ -331,11 +328,11 @@ if __name__ == "__main__":
     pickle.dump(dictionary_RDD_IDFs_Weights, output)
     output.close()
 
-    print IDFS_weights_BV.value
+    print(IDFS_weights_BV.value)
 
     # CREATE A HISTOGRAM -------------------------------------------------------------------------------------------#
     print("--------------------------------------------------------------------------------------------------------")
-    raw_input("Create an IDF-scores histogram...")
+    input("Create an IDF-scores histogram...")
     IDFs_values = dictionary_RDD_IDFs.map(lambda s: s[1]).collect()
     fig = plt.figure(figsize=(8, 3))
     plt.hist(IDFs_values, 50, log=True)
@@ -343,13 +340,13 @@ if __name__ == "__main__":
 
     # PRE-COMPUTE TF-IDF WEIGHTS: Build Weight Vectors -------------------------------------------------------------#
     print("--------------------------------------------------------------------------------------------------------")
-    raw_input("Produce the TF-IDF scores...")
+    input("Produce the TF-IDF scores...")
     TFsIDFs_Vector_Weights_RDDs = wordsByTweet.map(lambda tokens: (tfidf(tokens, IDFS_weights_BV.value))).cache()
-    print '\n'.join(map(lambda words: '{0}'.format(words), TFsIDFs_Vector_Weights_RDDs.take(10)))
+    print('\n'.join(map(lambda words: '{0}'.format(words), TFsIDFs_Vector_Weights_RDDs.take(10))))
 
     # BEGIN CREATION OF FEATURE VECTOR ------------------------------------------------------------------------------#
     print("--------------------------------------------------------------------------------------------------------")
-    raw_input("Create an ordered dictionary for feature extraction...")
+    input("Create an ordered dictionary for feature extraction...")
 
     # Create an ordered dictionary of the N first words
     Dictionary = (dictionary_RDD_IDFs
@@ -357,7 +354,7 @@ if __name__ == "__main__":
                   .map(lambda (token, score): token)
                   .collect())       # N = all-->collect(), otherwise use take(N)
     print("This is the complete dictionary, ordered based on idf scores:")
-    print '\n'.join(map(lambda token: '{0}'.format(token), Dictionary))
+    print('\n'.join(map(lambda token: '{0}'.format(token), Dictionary)))
     print("--------------------------------------------------------------------------------------------------------")
 
     # Create a broadcast variable for the Dictionary
@@ -375,19 +372,19 @@ if __name__ == "__main__":
                             .map(lambda (tokens): featurize(tokens))
                             .collect())
 
-    # GENERATE LABELEDPOINT PARAMETER TO LOAD TO THE TRAIN METHOD ---------------------------------------------------#
+    # GENERATE LABELEDPOINT PARAMETER TO LOAD TO THE TRAIN METHOD
     print("--------------------------------------------------------------------------------------------------------")
-    raw_input("Generate the LabeledPoint parameter... ")
+    input("Generate the LabeledPoint parameter... ")
     labelled_training_set_RDD = sc.parallelize(final_form_4_training(Training_Set_Vectors, training_labels))
 
-    # TRAIN MODEL ---------------------------------------------------------------------------------------------------#
+    # TRAIN MODEL #
     print("--------------------------------------------------------------------------------------------------------")
-    raw_input("Train the model... ")
+    input("Train the model... ")
     model = NaiveBayes.train(labelled_training_set_RDD, 1.0)
 
-    # CROSS-VALIDATE MODEL ------------------------ -----------------------------------------------------------------#
+    # CROSS-VALIDATE MODEL
     print("--------------------------------------------------------------------------------------------------------")
-    raw_input("Cross-Validate the model... ")
+    input("Cross-Validate the model... ")
     # Instantiate Cross_Validation RDD
     CV_RDD = sc.parallelize(cross_validation_set, 4)
 
@@ -402,24 +399,24 @@ if __name__ == "__main__":
     print("Cross Validation set loaded and tokenised... ")
 
     # Compute TF-IDF scores
-    raw_input("Produce the TF-IDF scores for Cross-Validation Set...")
+    input("Produce the TF-IDF scores for Cross-Validation Set...")
     CV_TFsIDFs_Vector_Weights_RDDs = (CV_wordsByTweet
                                       .map(lambda tokens: (tfidf(tokens, IDFS_weights_BV.value)))
                                       .cache())
 
     # Feature Extraction
-    raw_input("Extract Features for Cross-Validation Set...")
+    input("Extract Features for Cross-Validation Set...")
     CV_Set_Vectors = (CV_TFsIDFs_Vector_Weights_RDDs
                       .map(lambda (tokens): featurize(tokens))
                       .collect())
 
     # Generate labelledppoint parameter...
-    raw_input("Generate the LabeledPoint parameter... ")
+    input("Generate the LabeledPoint parameter... ")
     labelled_CV_set_RDD = sc.parallelize(final_form_4_training(CV_Set_Vectors, cross_validation_labels))
 
     # Compute Accuracy
     print("--------------------------------------------------------------------------------------------------------")
-    raw_input("Compute model CV-accuracy...")
+    input("Compute model CV-accuracy...")
     predictionAndLabel = labelled_CV_set_RDD.map(lambda x: (model.predict(x.features), x.label))
     accuracy = 100.0 * predictionAndLabel.filter(lambda (x, v): x == v).count() / labelled_CV_set_RDD.count()
 
@@ -429,7 +426,7 @@ if __name__ == "__main__":
 
     # TEST MODEL ---------------------------------------------------------------------------------------------------#
     print("--------------------------------------------------------------------------------------------------------")
-    raw_input("Test the model... ")
+    input("Test the model... ")
     # Instantiate Cross_Validation RDD
     test_RDD = sc.parallelize(test_set, 4)
 
@@ -444,24 +441,24 @@ if __name__ == "__main__":
     print("Test set loaded and tokenised... ")
 
     # Compute TF-IDF scores
-    raw_input("Produce the TF-IDF scores for Test Set...")
+    input("Produce the TF-IDF scores for Test Set...")
     test_TFsIDFs_Vector_Weights_RDDs = (test_wordsByTweet
                                         .map(lambda tokens: (tfidf(tokens, IDFS_weights_BV.value)))
                                         .cache())
 
     # Feature Extraction
-    raw_input("Extract Features for Cross-Validation Set...")
+    input("Extract Features for Cross-Validation Set...")
     test_Set_Vectors = (test_TFsIDFs_Vector_Weights_RDDs
                         .map(lambda (tokens): featurize(tokens))
                         .collect())
 
     # Generate labelledppoint parameter...
-    raw_input("Generate the LabeledPoint parameter... ")
+    input("Generate the LabeledPoint parameter... ")
     labelled_test_set_RDD = sc.parallelize(final_form_4_training(test_Set_Vectors, test_labels))
 
     # Compute Accuracy
     print("--------------------------------------------------------------------------------------------------------")
-    raw_input("Compute model Test-accuracy...")
+    input("Compute model Test-accuracy...")
     predictionAndLabel = labelled_test_set_RDD.map(lambda x: (model.predict(x.features), x.label))
     accuracy = 100.0 * predictionAndLabel.filter(lambda (x, v): x == v).count() / labelled_test_set_RDD.count()
 
@@ -472,5 +469,3 @@ if __name__ == "__main__":
     # SAVE MODEL ----------------------------------------------------------------------------------------------------#
     model_path = "/Users/path/to/twitter_analytics/NB_model"
     model.save(sc, model_path)
-
-# END OF FILE -------------------------------------------------------------------------------------------------------#
