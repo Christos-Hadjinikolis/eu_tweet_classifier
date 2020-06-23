@@ -7,13 +7,12 @@ consumer_secret = "to be completed"
 access_key = "to be completed"
 access_secret = "to be completed"
 
-# authorize twitter, initialize tweepy
+# Authorize twitter, initialize tweepy
 auth = tweepy.OAuthHandler(consumer_key, consumer_secret)
 auth.set_access_token(access_key, access_secret)
 api = tweepy.API(auth)
 
 
-# -- SUB-FUNCTIONS ----------------------------------------------------------------------------------------------------
 def get_list_members(owner_screen_name, slug):
     twitter_list = api.list_members(owner_screen_name=owner_screen_name, slug=slug, count=700)
 
@@ -34,7 +33,7 @@ def get_list_members(owner_screen_name, slug):
 
     return twitter_list
 
-# -- MAIN CODE --------------------------------------------------------------------------------------------------------
+
 if __name__ == '__main__':
 
     # UK MPs owner_screen_name:"tweetminster" slug:"ukmps"

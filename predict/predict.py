@@ -1,21 +1,21 @@
-# General IMPORTS --------------------------------------------------------------------------------------------------#
-import re
+
+import collections
+import operator
 import os
+import pickle
+import re
+import subprocess
 import sys
 import time
-import pickle
-import tweepy
-import operator
-import subprocess
-import collections
 from datetime import datetime
 
-# NLTK IMPORTS -----------------------------------------------------------------------------------------------------#
-from nltk.tokenize import RegexpTokenizer
+import tweepy
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 
-# PYSPARK PATH SETUP AND IMPORTS -----------------------------------------------------------------------------------#
+from nltk.tokenize import RegexpTokenizer
+
+# PYSPARK PATH SETUP AND IMPORTS
 os.environ['SPARK_HOME'] = "/Users/path/to/spark-1.6.1-bin-hadoop2.6"  # Path to source folder
 
 # Append pyspark  to Python Path
@@ -39,7 +39,7 @@ except ImportError as e:
     sys.exit(1)
 
 
-# GLOBAL VARIABLES -------------------------------------------------------------------------------------------------#
+# GLOBAL VARIABLES
 
 # Spark Context object
 sc = SparkContext('local[4]', 'EU_Tweet_Sentiment_Analyser')        # Instantiate a SparkContext object
@@ -65,7 +65,6 @@ access_key = [access_key_0, access_key_1]
 access_secret = [access_secret_0, access_secret_1]
 
 
-# -- SUB-FUNCTIONS ----------------------------------------------------------------------------------------------------
 def filter_tweet(tweet):
 
     tweet = re.sub("(htt.* ?)", " ", tweet)    # captures all occurences of "http" followed or not followed by a space
@@ -209,18 +208,79 @@ def get_all_tweets_for_prediction(screen_name, sameModel, tokenizer, C_KEY):
         resume = False
         try:
             tweets = api.user_timeline(screen_name=screen_name, count=200)
-        except tweepy.TweepError, e:
+            # If tweets have been accumulated:
+            if len(tweets) > 0:
+                # filter out non-EU-related tweets
+                eu_tweets = []
+                list_words = ['European union', 'European Union', 'european union', 'EUROPEAN UNION',
+                              'Brexit', 'brexit', 'BREXIT',
+                              'euref', 'EUREF', 'euRef', 'eu_ref', 'EUref',
+                              'leaveeu', 'leave_eu', 'leaveEU', 'leaveEu',
+                              'borisvsdave', 'BorisVsDave',
+                              'StrongerI', 'strongerI', 'strongeri', 'strongerI',
+                              'votestay', 'vote_stay', 'voteStay',
+                              'votein', 'voteout', 'voteIn', 'voteOut', 'vote_In', 'vote_Out',
+                              'referendum', 'Referendum', 'REFERENDUM',
+                              ' EU ', ' eu ']
+
+                for tweet in tweets:
+                    for word in list_words:
+                        if tweet.text.encode("utf-8").find(word) != -1:
+                            eu_tweets.append(tweet.text.encode("utf-8"))
+                            break
+
+                if len(eu_tweets) > 0:
+                    # TOKENIZE COLLECTED TWEETS -----------------------------------------------------------------------------#
+                    eu_tweets_sample_RDD = sc.parallelize(eu_tweets, 4)
+
+                    # Tokenize through Spark Transformations
+                    eu_wordsByTweet_RDD = (
+                        eu_tweets_sample_RDD.map(lambda tweet: tweet.decode("ascii", "ignore").encode("ascii"))
+                        .map(filter_tweet)
+                        .map(tokenizer.tokenize)
+                        .map(lemmatize)
+                        .map(filter_stop_words)
+                        .map(negation_tokenizer)
+                        .cache())
+
+                    # SHOW WORDS BY TWEET
+                    sample_RDD = eu_wordsByTweet_RDD.collect()
+                    print('\n'.join(map(lambda x: '{0}'.format(x), sample_RDD)))
+
+                    # COMPUTE TF-IDF SCORES
+                    TFsIDFs_Vector_Weights_RDDs = (eu_wordsByTweet_RDD
+                                                   .map(lambda tokens: (tfidf(tokens, IDFS_weights_BV.value)))
+                                                   .cache())
+
+                    # CREATE FEATURE VECTORS #
+                    # Code is outdated: Tuple parameter unpacking is not supported in Pyhon 3
+                    vectors = TFsIDFs_Vector_Weights_RDDs.map(lambda (tokens): featurize(tokens))
+
+                    # MAKE PREDICTIONS
+                    predictions = vectors.map(lambda v: sameModel.predict(v))
+                    prop = predictions.filter(lambda label: label == 1).count()
+                    opp = predictions.filter(lambda label: label == 0).count()
+                    return prop, opp, C_KEY
+                else:
+                    print("No eu-related tweets...")
+                    return 0, 0, C_KEY
+            else:
+                print("No tweets to collect...")
+                print("------------------------")
+                return 0, 0, C_KEY
+
+        except tweepy.TweepError as e:
             if e.reason == "Not authorized.":
                 print("Stop exception: %s." % e.reason)
-                print "------------------------"
+                print("------------------------")
                 return 0, 0, C_KEY
             elif e.reason == "Sorry, that page does not exist.":
                 print("Stop exception: %s." % e.reason)
-                print "------------------------"
+                print("------------------------")
                 return 0, 0, C_KEY
             else:
-                print "Tweepy Exception: %s" % e.reason
-                print "Rate limit exceeded--> Switching APP keys. Date/Time: %s." % str(datetime.now())
+                print("Tweepy Exception: %s" % e.reason)
+                print("Rate limit exceeded--> Switching APP keys. Date/Time: %s." % str(datetime.now()))
 
                 C_KEY = (C_KEY + 1) % 2
 
@@ -229,71 +289,11 @@ def get_all_tweets_for_prediction(screen_name, sameModel, tokenizer, C_KEY):
                 auth.set_access_token(access_key[C_KEY], access_secret[C_KEY])
                 api = tweepy.API(auth)
 
-                raw_input("Changed keys. Press any key to continue...")
+                input("Changed keys. Press any key to continue...")
                 resume = True
         except StopIteration:
-            print 'ERROR: Failed because of %s' % e.reason
+            print('ERROR: Failed because of %s' % e.reason)
             return 0, 0, C_KEY
-
-    # If tweets have been accumulated:
-    if len(tweets) > 0:
-        # filter out non-EU-related tweets
-        eu_tweets = []
-        list_words = ['European union', 'European Union', 'european union', 'EUROPEAN UNION',
-                      'Brexit', 'brexit', 'BREXIT',
-                      'euref', 'EUREF', 'euRef', 'eu_ref', 'EUref',
-                      'leaveeu', 'leave_eu', 'leaveEU', 'leaveEu',
-                      'borisvsdave', 'BorisVsDave',
-                      'StrongerI', 'strongerI', 'strongeri', 'strongerI',
-                      'votestay', 'vote_stay', 'voteStay',
-                      'votein', 'voteout', 'voteIn', 'voteOut', 'vote_In', 'vote_Out',
-                      'referendum', 'Referendum', 'REFERENDUM',
-                       ' EU ', ' eu ']
-
-        for tweet in tweets:
-            for word in list_words:
-                if tweet.text.encode("utf-8").find(word) != -1:
-                    eu_tweets.append(tweet.text.encode("utf-8"))
-                    break
-
-        if len(eu_tweets) > 0:
-            # TOKENIZE COLLECTED TWEETS -----------------------------------------------------------------------------#
-            eu_tweets_sample_RDD = sc.parallelize(eu_tweets, 4)
-
-            # Tokenize through Spark Transformations
-            eu_wordsByTweet_RDD = (eu_tweets_sample_RDD.map(lambda tweet: tweet.decode("ascii", "ignore").encode("ascii"))
-                            .map(filter_tweet)
-                            .map(tokenizer.tokenize)
-                            .map(lemmatize)
-                            .map(filter_stop_words)
-                            .map(negation_tokenizer)
-                            .cache())
-
-            # SHOW WORDS BY TWEET -----------------------------------------------------------------------------------#
-            sample_RDD = eu_wordsByTweet_RDD.collect()
-            print '\n'.join(map(lambda x: '{0}'.format(x), sample_RDD))
-
-            # COMPUTE TF-IDF SCORES ---------------------------------------------------------------------------------#
-            TFsIDFs_Vector_Weights_RDDs = (eu_wordsByTweet_RDD
-                                           .map(lambda tokens: (tfidf(tokens, IDFS_weights_BV.value)))
-                                           .cache())
-
-            # CREATE FEATURE VECTORS --------------------------------------------------------------------------------#
-            vectors = TFsIDFs_Vector_Weights_RDDs.map(lambda (tokens): featurize(tokens))
-
-            # MAKE PREDICTIONS
-            predictions = vectors.map(lambda v: sameModel.predict(v))
-            prop = predictions.filter(lambda label: label == 1).count()
-            opp = predictions.filter(lambda label: label == 0).count()
-            return prop, opp, C_KEY
-        else:
-            print "No eu-related tweets..."
-            return 0, 0, C_KEY
-    else:
-        print "No tweets to collect..."
-        return 0, 0, C_KEY
-
-    print "------------------------"
 
 
 def get_friends(user_handle, api):
@@ -303,13 +303,12 @@ def get_friends(user_handle, api):
 
     # Get user's friends
     for user in api.friends(screen_name=user_handle, count=200):
-        print user.screen_name
+        print(user.screen_name)
         users.append(user.screen_name)
 
     return users
 
 
-# -- MAIN CODE --------------------------------------------------------------------------------------------------------
 if __name__ == '__main__':
 
     # Choose App_0
@@ -345,7 +344,7 @@ if __name__ == '__main__':
     for key, value in sorted_dict:
         Dictionary.append(key)
 
-    print len(Dictionary)
+    print(len(Dictionary))
 
     # Create a broadcast variable for the Dictionary
     Dictionary_BV = sc.broadcast(sorted(Dictionary))
@@ -361,7 +360,7 @@ if __name__ == '__main__':
     # Get user twitter-handle
     x = int(input("Do you have a twitter account? \n(1) Yes \n(2) No \nYour choice: "))
     if x == 1:
-        user_handle = raw_input("Please provide user twitter handle: ")
+        user_handle = input("Please provide user twitter handle: ")
         friends = get_friends(user_handle, api)
 
         # Collect EU related tweets and predict position for each
@@ -384,14 +383,14 @@ if __name__ == '__main__':
         poss = 1
         negs = 1
 
-    # QUERIES -------------------------------------------------------------------------------------------------------#
+    # QUERIES
     print('------------------------------------- QUESTIONAIRE -------------------------------------')
-    print "Please complete the following questionaire: "
+    print("Please complete the following questionaire: ")
 
     pos_q = 0
     neg_q = 0
 
-    # Newspaper -------------------------------------------------
+    # Newspaper
     scores = [82, -8, -18, -42, -46, -54, 0]
     choice_0 = int(input('You read: '
                          '\n(1) The guardian'
@@ -408,7 +407,7 @@ if __name__ == '__main__':
     else:
         neg_q += -scores[choice_0 - 1]
 
-    # AGE -------------------------------------------------------
+    # AGE
     age = int(input('Age:'))
     if 18 <= age <= 29:
         pos_q += 46
@@ -421,7 +420,7 @@ if __name__ == '__main__':
     else:
         neg_q += 26
 
-    # UNIVERSITY ------------------------------------------------
+    # UNIVERSITY
     choice_1 = int(input('University graduate?'
                          '\n(1) Yes'
                          '\n(2) No'
@@ -429,7 +428,7 @@ if __name__ == '__main__':
     if choice_1 == 1:
         pos_q += 40
 
-    # SEX -------------------------------------------------------
+    # SEX
     choice_2 = int(input('Sex?'
                          '\n(1) Male'
                          '\n(2) Female'
@@ -437,7 +436,7 @@ if __name__ == '__main__':
     if choice_2 == 2:
         pos_q += 2
 
-    # PERMANENT ADDRESS IN -------------------------------------
+    # PERMANENT ADDRESS IN
     scores = [30, 26, 16, 10, 2, -2, -2, -2, -10, -10, -12, -18, 0]
     choice_3 = int(input('You are originally from:'
                          '\n(1) Nortern Ireland'
@@ -460,7 +459,7 @@ if __name__ == '__main__':
     else:
         neg_q += -scores[choice_3 - 1]
 
-    # CALCULATE DEMOGRAPHIC SCORES ----------------------------------------------------------------------------------#
+    # CALCULATE DEMOGRAPHIC SCORES #
 
     print('--------------------------------------- RESULTS ---------------------------------------')
 
@@ -468,20 +467,20 @@ if __name__ == '__main__':
     pos_q_percent = pos_q/float(total_Demographic_units) * 100
     neg_q_percent = neg_q / float(total_Demographic_units) * 100
 
-    print "Stay demographic score: " + str(pos_q) + ". Percentage: " \
-          + str(pos_q/float(total_Demographic_units) * 100) + "%"
-    print "Leave demographic score: " + str(neg_q) + ". Percentage: " \
-          + str(neg_q / float(total_Demographic_units) * 100) + "%"
+    print("Stay demographic score: " + str(pos_q) + ". Percentage: "
+          + str(pos_q / float(total_Demographic_units) * 100) + "%")
+    print("Leave demographic score: " + str(neg_q) + ". Percentage: "
+          + str(neg_q / float(total_Demographic_units) * 100) + "%")
 
-    # CALCULATE TWEET SENTIMENT ANALYSIS SCORES ---------------------------------------------------------------------#
+    # CALCULATE TWEET SENTIMENT ANALYSIS SCORES #
     total_eu_tweets = poss + negs
     pos_percent = poss/float(total_eu_tweets) * 100
     neg_percent = negs/float(total_eu_tweets) * 100
 
-    print "Stay tweets: " + str(poss) + ". Percentage: " + str(poss/float(total_eu_tweets) * 100) + "%"
-    print "Leave tweets: " + str(negs) + ". Percentage: " + str(negs/float(total_eu_tweets) * 100) + "%"
+    print("Stay tweets: " + str(poss) + ". Percentage: " + str(poss / float(total_eu_tweets) * 100) + "%")
+    print("Leave tweets: " + str(negs) + ". Percentage: " + str(negs / float(total_eu_tweets) * 100) + "%")
 
-    # PRESENT FINAL RESULTS -----------------------------------------------------------------------------------------#
+    # PRESENT FINAL RESULTS #
     video_1.kill()
     video = 'Users:path:to:vids:processing.mp4'
     video_2 = subprocess.Popen("osascript runner.scpt " + "'" + video + "'", shell=True)
@@ -490,10 +489,10 @@ if __name__ == '__main__':
     final_pos = pos_q_percent * (25/float(100)) + pos_percent * (75/float(100))
     final_neg = neg_q_percent * (25 / float(100)) + neg_percent * (75 / float(100))
 
-    print "----------------------------------------------"
-    print "Final percentages:"
-    print "Stay: " + str(final_pos) + "%"
-    print "Leave: " + str(final_neg) + "%"
+    print("----------------------------------------------")
+    print("Final percentages:")
+    print("Stay: " + str(final_pos) + "%")
+    print("Leave: " + str(final_neg) + "%")
 
     if final_pos > final_neg and (final_pos - final_neg) > 20:
         video_2.kill()
@@ -507,5 +506,3 @@ if __name__ == '__main__':
         video_2.kill()
         video = 'Users:path:to:vids:undec.mp4'
         video_5 = subprocess.Popen("osascript runner.scpt " + "'" + video + "'", shell=True)
-
-# END OF FILE -------------------------------------------------------------------------------------------------------#
